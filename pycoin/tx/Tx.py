@@ -46,7 +46,7 @@ from .exceptions import SolvingError
 from .pay_to import script_obj_from_script, ScriptPayToScript
 from .script import opcodes
 from .script import tools
-
+from pycoin.serialize import b2h
 
 MAX_MONEY = 21000000 * SATOSHI_PER_COIN
 MAX_BLOCK_SIZE = 1000000
@@ -670,3 +670,165 @@ class Tx(object):
                 raise BadSpendableError("unspents[%d] script mismatch!" % idx)
 
         return self.fee()
+
+    def estimated_size(self):
+        """Return an estimated virtual tx size in vbytes.
+        BIP-0141 defines 'Virtual transaction size' to be weight/4 rounded up.
+        This definition is only for humans, and has little meaning otherwise.
+        If we wanted sub-byte precision, fee calculation should use transaction
+        weights, but for simplicity we approximate that with (virtual_size)x4
+        """
+        weight = self.estimated_weight()
+        return weight // 4 + (weight % 4 > 0)
+
+    def estimated_weight(self):
+        """Return an estimate of transaction weight."""
+        total_tx_size = self.estimated_total_size()
+        base_tx_size = self.estimated_base_size()
+        return 3 * base_tx_size + total_tx_size
+
+    def estimated_total_size(self):
+        """Return an estimated total transaction size in bytes."""
+        return len(self.serialize(True)) // 2 if self.bad_signature_count() or self.as_hex() is None else len(self.as_hex()) // 2
+
+    def estimated_witness_size(self):
+        """Return an estimate of witness size in bytes."""
+        if not self.has_witness_data():
+            return 0
+        inputs = self.txs_in
+        witness = ''.join(self.serialize_witness(x) for x in inputs)
+        witness_size = len(witness) // 2 + 2  # include marker and flag
+        return witness_size
+
+    def estimated_base_size(self):
+        """Return an estimated base transaction size in bytes."""
+        return self.estimated_total_size() - self.estimated_witness_size()
+
+    def serialize(self, witness=True):
+        nVersion = self.int_to_hex(self.version, 4)
+        nLocktime = self.int_to_hex(self.lock_time, 4)
+        inputs = self.txs_in
+        outputs = self.txs_out
+        txins = self.var_int(len(inputs)) + ''.join(self.serialize_input(txin) for txin in inputs)
+        txouts = self.var_int(len(outputs)) + ''.join(self.serialize_output(o) for o in outputs)
+        if witness and self.has_witness_data():
+            marker = '00'
+            flag = '01'
+            witness = ''.join(self.serialize_witness(x) for x in inputs)
+            return nVersion + marker + flag + txins + txouts + witness + nLocktime
+        else:
+            return nVersion + txins + txouts + nLocktime
+
+    def serialize_output(self, output):
+        # output_type, addr, amount = output
+        s = self.int_to_hex(output.coin_value, 8)
+        script = b2h(output.script)
+        s += self.var_int(len(script) // 2)
+        s += script
+        return s
+
+    @classmethod
+    def serialize_outpoint(self, txin):
+        return b2h(txin.previous_hash) + Tx.int_to_hex(txin.previous_index, 4)
+
+    @classmethod
+    def get_siglist(self):
+        # if we have enough signatures, we use the actual pubkeys
+        # otherwise, use extended pubkeys (with bip32 derivation)
+
+        num_sig = 1
+        # we assume that signature will be 0x48 bytes long
+        pk_list = ["00" * 0x21] * num_sig
+        sig_list = ["00" * 0x48] * num_sig
+
+        return pk_list, sig_list
+
+    @classmethod
+    def input_script(self, txin):
+
+        if txin.is_coinbase():
+            return txin.script
+        pubkeys, sig_list = self.get_siglist()
+        script = ''.join(Tx.push_script(x) for x in sig_list)
+        # if _type == 'p2pk':
+        #     pass
+        # elif _type == 'p2sh':
+        #     # put op_0 before script
+        #     script = '00' + script
+        #     redeem_script = multisig_script(pubkeys, txin['num_sig'])
+        #     script += push_script(redeem_script)
+        # elif _type == 'p2pkh':
+        #     script += push_script(pubkeys[0])
+        # elif _type in ['p2wpkh', 'p2wsh']:
+        #     return ''
+        # elif _type == 'p2wpkh-p2sh':
+        #     pubkey = safe_parse_pubkey(pubkeys[0])
+        #     scriptSig = bitcoin.p2wpkh_nested_script(pubkey)
+        #     return push_script(scriptSig)
+        # elif _type == 'p2wsh-p2sh':
+        #     witness_script = self.get_preimage_script(txin)
+        #     scriptSig = bitcoin.p2wsh_nested_script(witness_script)
+        #     return push_script(scriptSig)
+        # elif _type == 'address':
+        script += Tx.push_script(pubkeys[0])
+        #     script += push_script(pubkeys[0])
+        # elif _type == 'unknown':
+        #     return txin['scriptSig']
+
+        return script
+
+    @staticmethod
+    def op_push(i):
+        if i < 0x4c:
+            return Tx.int_to_hex(i)
+        elif i < 0xff:
+            return '4c' + Tx.int_to_hex(i)
+        elif i < 0xffff:
+            return '4d' + Tx.int_to_hex(i, 2)
+        else:
+            return '4e' + Tx.int_to_hex(i, 4)
+
+    @staticmethod
+    def push_script(x):
+        return Tx.op_push(len(x) // 2) + x
+
+    @classmethod
+    def serialize_input(self, txin):
+        # Prev hash and index
+        s = self.serialize_outpoint(txin)
+        script =self.input_script(txin)
+        # Script length, script, sequence
+        s += self.var_int(len(script)//2)
+        s += script
+        s += Tx.int_to_hex(txin.sequence, 4)
+        return s
+
+    @staticmethod
+    def int_to_hex(i, length=1):
+        assert isinstance(i, int)
+        s = hex(i)[2:].rstrip('L')
+        s = "0"*(2*length - len(s)) + s
+        return Tx.rev_hex(s)
+
+    @staticmethod
+    def rev_hex(s):
+        return b2h(h2b_rev(s))
+
+    @staticmethod
+    def int_to_hex(i, length=1):
+        assert isinstance(i, int)
+        s = hex(i)[2:].rstrip('L')
+        s = "0" * (2 * length - len(s)) + s
+        return Tx.rev_hex(s)
+
+    @staticmethod
+    def var_int(i):
+        # https://en.bitcoin.it/wiki/Protocol_specification#Variable_length_integer
+        if i < 0xfd:
+            return Tx.int_to_hex(i)
+        elif i <= 0xffff:
+            return "fd" + Tx.int_to_hex(i, 2)
+        elif i <= 0xffffffff:
+            return "fe" + Tx.int_to_hex(i, 4)
+        else:
+            return "ff" + Tx.int_to_hex(i, 8)
