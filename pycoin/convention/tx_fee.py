@@ -8,6 +8,6 @@ def recommended_fee_for_tx(tx):
     """
 
     size = tx.estimated_size()
-    tx_fee = int(TX_FEE_PER_THOUSAND_BYTES * size)
+    tx_fee = int(TX_FEE_PER_THOUSAND_BYTES * size//1000)
 
     return tx_fee

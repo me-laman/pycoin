@@ -29,7 +29,7 @@ import io
 import warnings
 
 from ..convention import SATOSHI_PER_COIN
-from ..encoding import double_sha256, from_bytes_32
+from ..encoding import double_sha256, from_bytes_32, hash160
 from ..serialize import b2h, b2h_rev, h2b, h2b_rev
 from ..serialize.bitcoin_streamer import (
     parse_struct, parse_bc_int, parse_bc_string,
@@ -57,6 +57,50 @@ SIGHASH_SINGLE = 3
 SIGHASH_ANYONECANPAY = 0x80
 
 ZERO32 = b'\0' * 32
+
+
+def int_to_hex(i, length=1):
+    assert isinstance(i, int)
+    s = hex(i)[2:].rstrip('L')
+    s = "0" * (2 * length - len(s)) + s
+    return rev_hex(s)
+
+
+def p2wsh_nested_script(witness_script):
+    import hashlib
+    wsh = hashlib.sha256(h2b(witness_script)).digest()
+    return '00' + push_script(b2h(wsh))
+
+
+def op_push(i):
+    if i < 0x4c:
+        return int_to_hex(i)
+    elif i < 0xff:
+        return '4c' + int_to_hex(i)
+    elif i < 0xffff:
+        return '4d' + int_to_hex(i, 2)
+    else:
+        return '4e' + int_to_hex(i, 4)
+
+
+def push_script(x):
+    return op_push(len(x) // 2) + x
+
+
+def rev_hex(s):
+    return b2h(h2b_rev(s))
+
+
+def var_int(i):
+    # https://en.bitcoin.it/wiki/Protocol_specification#Variable_length_integer
+    if i < 0xfd:
+        return int_to_hex(i)
+    elif i <= 0xffff:
+        return "fd" + int_to_hex(i, 2)
+    elif i <= 0xffffffff:
+        return "fe" + int_to_hex(i, 4)
+    else:
+        return "ff" + int_to_hex(i, 8)
 
 
 class Tx(object):
@@ -199,6 +243,9 @@ class Tx(object):
 
     def has_witness_data(self):
         return any(len(tx_in.witness) > 0 for tx_in in self.txs_in)
+
+    def is_segwit(self):
+        return any(self.is_segwit_input(ix) for ix,  x in enumerate(self.unspents))
 
     def hash(self, hash_type=None):
         """Return the hash for this Tx object."""
@@ -693,10 +740,10 @@ class Tx(object):
 
     def estimated_witness_size(self):
         """Return an estimate of witness size in bytes."""
-        if not self.has_witness_data():
+        if not self.is_segwit():
             return 0
         inputs = self.txs_in
-        witness = ''.join(self.serialize_witness(x) for x in inputs)
+        witness = ''.join(self.serialize_witness(ix, x) for ix, x in enumerate(inputs))
         witness_size = len(witness) // 2 + 2  # include marker and flag
         return witness_size
 
@@ -705,31 +752,33 @@ class Tx(object):
         return self.estimated_total_size() - self.estimated_witness_size()
 
     def serialize(self, witness=True):
-        nVersion = self.int_to_hex(self.version, 4)
-        nLocktime = self.int_to_hex(self.lock_time, 4)
+        nVersion = int_to_hex(self.version, 4)
+        nLocktime = int_to_hex(self.lock_time, 4)
         inputs = self.txs_in
         outputs = self.txs_out
-        txins = self.var_int(len(inputs)) + ''.join(self.serialize_input(txin) for txin in inputs)
-        txouts = self.var_int(len(outputs)) + ''.join(self.serialize_output(o) for o in outputs)
-        if witness and self.has_witness_data():
+        txins = var_int(len(inputs)) + ''.join(self.serialize_input(ix, txin) for ix, txin in enumerate(inputs))
+        txouts = var_int(len(outputs)) + ''.join(self.serialize_output(o) for o in outputs)
+        if witness and self.is_segwit():
             marker = '00'
             flag = '01'
-            witness = ''.join(self.serialize_witness(x) for x in inputs)
+            witness = ''.join(self.serialize_witness(ix, x) for ix, x in enumerate(inputs))
             return nVersion + marker + flag + txins + txouts + witness + nLocktime
         else:
             return nVersion + txins + txouts + nLocktime
 
     def serialize_output(self, output):
         # output_type, addr, amount = output
-        s = self.int_to_hex(output.coin_value, 8)
+        s = int_to_hex(output.coin_value, 8)
         script = b2h(output.script)
-        s += self.var_int(len(script) // 2)
+        s += var_int(len(script) // 2)
         s += script
         return s
 
     @classmethod
     def serialize_outpoint(self, txin):
-        return b2h(txin.previous_hash) + Tx.int_to_hex(txin.previous_index, 4)
+        return b2h(txin.previous_hash) + int_to_hex(txin.previous_index, 4)
+
+
 
     @classmethod
     def get_siglist(self):
@@ -744,91 +793,50 @@ class Tx(object):
         return pk_list, sig_list
 
     @classmethod
-    def input_script(self, txin):
+    def input_script(cls, type, txin):
 
         if txin.is_coinbase():
             return txin.script
-        pubkeys, sig_list = self.get_siglist()
-        script = ''.join(Tx.push_script(x) for x in sig_list)
-        # if _type == 'p2pk':
-        #     pass
-        # elif _type == 'p2sh':
-        #     # put op_0 before script
-        #     script = '00' + script
-        #     redeem_script = multisig_script(pubkeys, txin['num_sig'])
-        #     script += push_script(redeem_script)
-        # elif _type == 'p2pkh':
-        #     script += push_script(pubkeys[0])
-        # elif _type in ['p2wpkh', 'p2wsh']:
-        #     return ''
-        # elif _type == 'p2wpkh-p2sh':
-        #     pubkey = safe_parse_pubkey(pubkeys[0])
-        #     scriptSig = bitcoin.p2wpkh_nested_script(pubkey)
-        #     return push_script(scriptSig)
-        # elif _type == 'p2wsh-p2sh':
-        #     witness_script = self.get_preimage_script(txin)
-        #     scriptSig = bitcoin.p2wsh_nested_script(witness_script)
-        #     return push_script(scriptSig)
-        # elif _type == 'address':
-        script += Tx.push_script(pubkeys[0])
-        #     script += push_script(pubkeys[0])
-        # elif _type == 'unknown':
-        #     return txin['scriptSig']
-
+        pubkeys, sig_list = cls.get_siglist()
+        script = ''.join(push_script(x) for x in sig_list)
+        if 'pay to address' in type:
+            pass
+        elif 'witness' in type:
+            witness_script = cls.get_preimage_script(pubkeys[0])
+            scriptSig = p2wsh_nested_script(witness_script)
+            return push_script(scriptSig)
+        script += push_script(pubkeys[0])
         return script
 
-    @staticmethod
-    def op_push(i):
-        if i < 0x4c:
-            return Tx.int_to_hex(i)
-        elif i < 0xff:
-            return '4c' + Tx.int_to_hex(i)
-        elif i < 0xffff:
-            return '4d' + Tx.int_to_hex(i, 2)
-        else:
-            return '4e' + Tx.int_to_hex(i, 4)
+    def serialize_witness(self, ix, txin):
+        add_w = lambda x: var_int(len(x)//2) + x
+        if not self.is_segwit_input(ix):
+            return '00'
+        pubkeys, sig_list = self.get_siglist()
+        witness = var_int(2) + add_w(sig_list[0]) + add_w(pubkeys[0])
+        value_field = '' if not self.bad_signature_count() else var_int(0xffffffff)
+        return value_field + witness
 
-    @staticmethod
-    def push_script(x):
-        return Tx.op_push(len(x) // 2) + x
+    def is_segwit_input(self, ix):
+        script_type = script_obj_from_script(self.unspents[ix].script).info().get('type')
+        return 'witness' in script_type
 
-    @classmethod
-    def serialize_input(self, txin):
+    def serialize_input(self, ix, txin):
         # Prev hash and index
+        type = script_obj_from_script(self.unspents[ix].script).info().get('type')
         s = self.serialize_outpoint(txin)
-        script =self.input_script(txin)
+        script =self.input_script(type, txin)
         # Script length, script, sequence
-        s += self.var_int(len(script)//2)
+        s += var_int(len(script)//2)
         s += script
-        s += Tx.int_to_hex(txin.sequence, 4)
+        s += int_to_hex(txin.sequence, 4)
         return s
 
-    @staticmethod
-    def int_to_hex(i, length=1):
-        assert isinstance(i, int)
-        s = hex(i)[2:].rstrip('L')
-        s = "0"*(2*length - len(s)) + s
-        return Tx.rev_hex(s)
 
-    @staticmethod
-    def rev_hex(s):
-        return b2h(h2b_rev(s))
+    @classmethod
+    def get_preimage_script(self, pubkey):
 
-    @staticmethod
-    def int_to_hex(i, length=1):
-        assert isinstance(i, int)
-        s = hex(i)[2:].rstrip('L')
-        s = "0" * (2 * length - len(s)) + s
-        return Tx.rev_hex(s)
+        pkh = b2h(hash160(h2b(pubkey)))
 
-    @staticmethod
-    def var_int(i):
-        # https://en.bitcoin.it/wiki/Protocol_specification#Variable_length_integer
-        if i < 0xfd:
-            return Tx.int_to_hex(i)
-        elif i <= 0xffff:
-            return "fd" + Tx.int_to_hex(i, 2)
-        elif i <= 0xffffffff:
-            return "fe" + Tx.int_to_hex(i, 4)
-        else:
-            return "ff" + Tx.int_to_hex(i, 8)
+        return '76a9' + push_script(pkh) + '88ac'
+
