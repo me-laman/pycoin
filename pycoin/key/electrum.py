@@ -34,7 +34,7 @@ class ElectrumWallet(Key):
         pp = None
         if master_public_key:
             pp = tuple(from_bytes_32(master_public_key[idx:idx+32]) for idx in (0, 32))
-        super(ElectrumWallet, self).__init__(secret_exponent=master_private_key, public_pair=pp)
+        super(ElectrumWallet, self).__init__(secret_exponent=master_private_key, public_pair=pp, netcode=netcode)
         self._master_public_key = None
 
     def secret_exponent(self):
@@ -68,13 +68,14 @@ class ElectrumWallet(Key):
         if self.master_private_key():
             return Key(
                 secret_exponent=((self.master_private_key() + offset) % ORDER),
-                prefer_uncompressed=True
+                prefer_uncompressed=True,
+                netcode=self._netcode
             )
         p1 = offset * secp256k1_generator
         x, y = self.public_pair()
         p2 = secp256k1_generator.Point(x, y)
         p = p1 + p2
-        return Key(public_pair=p, prefer_uncompressed=True)
+        return Key(public_pair=p, prefer_uncompressed=True, netcode=self._netcode)
 
     def subkeys(self, path):
         """
