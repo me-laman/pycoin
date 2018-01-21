@@ -6,6 +6,7 @@ from ...serialize import b2h
 
 from .ScriptType import ScriptType
 
+
 from pycoin.contrib import segwit_addr
 
 
@@ -54,6 +55,16 @@ class ScriptPayToScriptWit(ScriptType):
             solution.append(data)
         solution.append(underlying_script)
         return (b"", solution)
+
+    def address(self, netcode=None):
+        from pycoin.networks import bech32_hrp_for_netcode
+        from pycoin.networks.default import get_current_netcode
+        if netcode is None:
+            netcode = get_current_netcode()
+
+        bech32_hrp = bech32_hrp_for_netcode(netcode)
+        address = segwit_addr.encode(bech32_hrp, self.version, self.hash256)
+        return address
 
     def script(self):
         if self._script is None:
