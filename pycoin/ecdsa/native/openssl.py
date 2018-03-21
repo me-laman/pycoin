@@ -5,6 +5,10 @@ import platform
 from .bignum import bignum_type_for_library
 
 
+NID_X9_62_prime256v1 = 415
+NID_secp256k1 = 714
+
+
 class BignumContext(ctypes.Structure):
     pass
 
@@ -18,7 +22,11 @@ def set_api(library, api_info):
 
 def load_library():
     system = platform.system()
-    if system == 'Windows':
+    PYCOIN_LIBCRYPTO_PATH = os.getenv("PYCOIN_LIBCRYPTO_PATH")
+
+    if PYCOIN_LIBCRYPTO_PATH:
+        library_path = PYCOIN_LIBCRYPTO_PATH
+    elif system == 'Windows':
         if platform.architecture()[0] == '64bit':
             library_path = ctypes.util.find_library('libeay64')
         else:
@@ -38,7 +46,6 @@ def load_library():
     BN_CTX = ctypes.POINTER(BignumContext)
 
     BIGNUM_API = [
-        ("BN_init", [BN_P], None),
         ("BN_new", [], BN_P),
         ("BN_set_word", [BN_P, ctypes.c_ulong], ctypes.c_int),
         ("BN_clear_free", [BN_P], None),
@@ -68,44 +75,8 @@ def load_library():
 OpenSSL = load_library()
 
 
+def create_OpenSSLOptimizations(curve_id):
 
-class Optimizations:
-
-    if OpenSSL:
-        openssl_group = OpenSSL.EC_GROUP_new_by_curve_name(714)
-
-    def multiply(self, p, e):
-        "Use OpenSSL to perform point mulitiplication."
-        if e == 0 or p == self._infinity:
-            return self._infinity
-
-        bn_x = OpenSSL.BignumType(p[0])
-        bn_y = OpenSSL.BignumType(p[1])
-        bn_n = OpenSSL.BignumType(e)
-
-        ctx = OpenSSL.BN_CTX_new()
-        ec_result = OpenSSL.EC_POINT_new(self.openssl_group)
-        ec_point = OpenSSL.EC_POINT_new(self.openssl_group)
-
-        OpenSSL.EC_POINT_set_affine_coordinates_GFp(self.openssl_group, ec_point, bn_x, bn_y, ctx)
-
-        OpenSSL.EC_POINT_mul(self.openssl_group, ec_result, None, ec_point, bn_n, ctx)
-
-        OpenSSL.EC_POINT_get_affine_coordinates_GFp(self.openssl_group, ec_result, bn_x, bn_y, ctx)
-        OpenSSL.EC_POINT_free(ec_point)
-        OpenSSL.EC_POINT_free(ec_result)
-        OpenSSL.BN_CTX_free(ctx)
-        return self.Point(bn_x.to_int(), bn_y.to_int())
-
-    def inverse_mod(self, a, p):
-        ctx = OpenSSL.BN_CTX_new()
-        a1 = OpenSSL.BignumType(a)
-        OpenSSL.BN_mod_inverse(a1, a1, OpenSSL.BignumType(p), ctx)
-        OpenSSL.BN_CTX_free(ctx)
-        return a1.to_int()
-
-
-def create_OpenSSLOptimizations():
     class noop:
         pass
 
@@ -116,7 +87,43 @@ def create_OpenSSLOptimizations():
     if not OpenSSL:
         return noop
 
+    class Optimizations:
+
+        if OpenSSL:
+            openssl_group = OpenSSL.EC_GROUP_new_by_curve_name(curve_id)
+
+        def multiply(self, p, e):
+            "Use OpenSSL to perform point mulitiplication."
+            if e == 0 or p == self._infinity:
+                return self._infinity
+
+            bn_x = OpenSSL.BignumType(p[0])
+            bn_y = OpenSSL.BignumType(p[1])
+            bn_n = OpenSSL.BignumType(e)
+
+            ctx = OpenSSL.BN_CTX_new()
+            ec_result = OpenSSL.EC_POINT_new(self.openssl_group)
+            ec_point = OpenSSL.EC_POINT_new(self.openssl_group)
+
+            OpenSSL.EC_POINT_set_affine_coordinates_GFp(self.openssl_group, ec_point, bn_x, bn_y, ctx)
+
+            OpenSSL.EC_POINT_mul(self.openssl_group, ec_result, None, ec_point, bn_n, ctx)
+
+            OpenSSL.EC_POINT_get_affine_coordinates_GFp(self.openssl_group, ec_result, bn_x, bn_y, ctx)
+            OpenSSL.EC_POINT_free(ec_point)
+            OpenSSL.EC_POINT_free(ec_result)
+            OpenSSL.BN_CTX_free(ctx)
+            return self.Point(bn_x.to_int(), bn_y.to_int())
+
+        def raw_mul(self, e):
+            """Multiply the generator by an integer."""
+            return self.multiply(self, e)
+
+        def inverse_mod(self, a, p):
+            ctx = OpenSSL.BN_CTX_new()
+            a1 = OpenSSL.BignumType(a)
+            OpenSSL.BN_mod_inverse(a1, a1, OpenSSL.BignumType(p), ctx)
+            OpenSSL.BN_CTX_free(ctx)
+            return a1.to_int()
+
     return Optimizations
-
-
-OpenSSLOptimizations = create_OpenSSLOptimizations()

@@ -1,12 +1,11 @@
 import hashlib
-import itertools
 
-from pycoin.ecdsa.secp256k1 import secp256k1_generator
-from pycoin.encoding import double_sha256, from_bytes_32, to_bytes_32
-from pycoin.key import Key
+from .subpaths import subpaths_for_path_range
+
+from pycoin.encoding.bytes32 import from_bytes_32
+from pycoin.encoding.hash import double_sha256
+from pycoin.key.Key import Key
 from pycoin.serialize import b2h
-
-ORDER = secp256k1_generator.order()
 
 
 def initial_key_to_master_key(initial_key):
@@ -22,20 +21,19 @@ def initial_key_to_master_key(initial_key):
 
 
 class ElectrumWallet(Key):
-    def __init__(self, initial_key=None, master_private_key=None, master_public_key=None, netcode='BTC'):
-        if [initial_key, master_private_key, master_public_key].count(None) != 2:
+    def __init__(self, generator, initial_key=None, master_private_key=None, public_pair=None, master_public_key=None):
+        if [initial_key, public_pair, master_private_key, master_public_key].count(None) != 3:
             raise ValueError(
                 "exactly one of initial_key, master_private_key, master_public_key must be non-None")
         self._initial_key = initial_key
-        self._netcode = netcode
+        self._generator = generator
 
         if initial_key is not None:
             master_private_key = initial_key_to_master_key(initial_key)
-        pp = None
         if master_public_key:
-            pp = tuple(from_bytes_32(master_public_key[idx:idx+32]) for idx in (0, 32))
-        super(ElectrumWallet, self).__init__(secret_exponent=master_private_key, public_pair=pp, netcode=netcode)
-        self._master_public_key = None
+            public_pair = tuple(from_bytes_32(master_public_key[idx:idx+32]) for idx in (0, 32))
+        super(ElectrumWallet, self).__init__(
+            generator=generator, secret_exponent=master_private_key, public_pair=public_pair, prefer_uncompressed=True)
 
     def secret_exponent(self):
         if self._secret_exponent is None and self._initial_key:
@@ -46,10 +44,7 @@ class ElectrumWallet(Key):
         return self.secret_exponent()
 
     def master_public_key(self):
-        if self._master_public_key is None:
-            pp = self.public_pair()
-            self._master_public_key = to_bytes_32(pp[0]) + to_bytes_32(pp[1])
-        return self._master_public_key
+        return self.sec(use_uncompressed=True)[1:]
 
     def subkey(self, path):
         """
@@ -65,55 +60,25 @@ class ElectrumWallet(Key):
             for_change = 0
         b = (str(n) + ':' + str(for_change) + ':').encode("utf8") + self.master_public_key()
         offset = from_bytes_32(double_sha256(b))
-        if self.master_private_key():
-            return Key(
-                secret_exponent=((self.master_private_key() + offset) % ORDER),
-                prefer_uncompressed=True,
-                netcode=self._netcode
+
+        if self.secret_exponent():
+            return self.__class__(
+                generator=self._generator,
+                master_private_key=((self.master_private_key() + offset) % self._generator.order())
             )
-        p1 = offset * secp256k1_generator
+        p1 = offset * self._generator
         x, y = self.public_pair()
-        p2 = secp256k1_generator.Point(x, y)
+        p2 = self._generator.Point(x, y)
         p = p1 + p2
-        return Key(public_pair=p, prefer_uncompressed=True, netcode=self._netcode)
+
+        return self.__class__(public_pair=p, generator=self._generator)
 
     def subkeys(self, path):
         """
         A generalized form that can return multiple subkeys.
         """
-        if path == '':
-            yield self
-            return
-
-        def range_iterator(the_range):
-            for r in the_range.split(","):
-                is_hardened = r[-1] in "'pH"
-                if is_hardened:
-                    r = r[:-1]
-                hardened_char = "H" if is_hardened else ''
-                if '-' in r:
-                    low, high = [int(x) for x in r.split("-", 1)]
-                    for t in range(low, high+1):
-                        yield "%d%s" % (t, hardened_char)
-                else:
-                    yield "%s%s" % (r, hardened_char)
-
-        def subkey_iterator(subkey_paths):
-            # examples:
-            #   0/1H/0-4 => ['0/1H/0', '0/1H/1', '0/1H/2', '0/1H/3', '0/1H/4']
-            #   0/2,5,9-11 => ['0/2', '0/5', '0/9', '0/10', '0/11']
-            #   3H/2/5/15-20p => ['3H/2/5/15p', '3H/2/5/16p', '3H/2/5/17p', '3H/2/5/18p',
-            #          '3H/2/5/19p', '3H/2/5/20p']
-            #   5-6/7-8p,15/1-2 => ['5/7H/1', '5/7H/2', '5/8H/1', '5/8H/2',
-            #         '5/15/1', '5/15/2', '6/7H/1', '6/7H/2', '6/8H/1', '6/8H/2', '6/15/1', '6/15/2']
-
-            components = subkey_paths.split("/")
-            iterators = [range_iterator(c) for c in components]
-            for v in itertools.product(*iterators):
-                yield '/'.join(v)
-
-        for subkey in subkey_iterator(path):
-            yield self.subkey(subkey)
+        for _ in subpaths_for_path_range(path, hardening_chars="'pH"):
+            yield self.subkey(_)
 
     def __str__(self):
         return "Electrum<%s>" % b2h(self.master_public_key)

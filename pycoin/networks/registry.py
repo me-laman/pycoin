@@ -19,7 +19,7 @@ def register_network(network_info):
     by its netcode.
     """
     assert isinstance(network_info, Network)
-    code = network_info.code
+    code = network_info.code.upper()
     if code in _NETWORK_NAME_LOOKUP:
         if _NETWORK_NAME_LOOKUP[code] == network_info:
             return
@@ -48,7 +48,7 @@ def network_for_netcode(netcode):
     """
     Return the given Network object for the given netcode (or None).
     """
-    return _NETWORK_NAME_LOOKUP.get(netcode)
+    return _NETWORK_NAME_LOOKUP.get(netcode.upper())
 
 
 def network_codes():
@@ -108,17 +108,17 @@ def wif_prefix_for_netcode(netcode):
 
 def address_prefix_for_netcode(netcode):
     "Return the 1 byte prefix for addresses for the given netcode (or None)"
-    return _lookup(netcode, "address")
+    return _NETWORK_NAME_LOOKUP.get(netcode).ui._address_prefix
 
 
 def bech32_hrp_for_netcode(netcode):
     "Return the bech32 hrp prefix for addresses for the given netcode (or None)"
-    return _lookup(netcode, "bech32_hrp")
+    return _NETWORK_NAME_LOOKUP.get(netcode).ui._bech32_hrp
 
 
 def pay_to_script_prefix_for_netcode(netcode):
     "Return the 1 byte prefix for pay-to-script addresses for the given netcode (or None)"
-    return _lookup(netcode, "pay_to_script")
+    return _NETWORK_NAME_LOOKUP.get(netcode).ui._pay_to_script_prefix
 
 
 def prv32_prefix_for_netcode(netcode):

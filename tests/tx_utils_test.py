@@ -2,20 +2,24 @@ import hashlib
 import struct
 import unittest
 
+from pycoin.coins.bitcoin.networks import BitcoinMainnet
+
 from pycoin.ecdsa.secp256k1 import secp256k1_generator
-from pycoin.encoding import public_pair_to_bitcoin_address, secret_exponent_to_wif
 
 from pycoin.tx.exceptions import BadSpendableError
 from pycoin.tx.tx_utils import create_signed_tx
-from pycoin.tx.Spendable import Spendable
-from pycoin.ui import standard_tx_out_script
 
 
-BITCOIN_ADDRESSES = [public_pair_to_bitcoin_address(i * secp256k1_generator) for i in range(1, 21)]
+Key = BitcoinMainnet.ui._key_class
+Spendable = BitcoinMainnet.tx.Spendable
 
-WIFS = [secret_exponent_to_wif(i) for i in range(1, 21)]
+script_for_address = BitcoinMainnet.ui.script_for_address
 
-FAKE_HASHES = [hashlib.sha256(struct.pack("Q", idx)).digest() for idx in range(100)]
+BITCOIN_ADDRESSES = [Key(i, generator=secp256k1_generator).address() for i in range(1, 21)]
+
+WIFS = [Key(i, generator=secp256k1_generator).wif() for i in range(1, 21)]
+
+FAKE_HASH = hashlib.sha256(struct.pack("Q", 1)).digest()
 
 
 class SpendTest(unittest.TestCase):
@@ -26,7 +30,7 @@ class SpendTest(unittest.TestCase):
 
         # create a fake Spendable
         COIN_VALUE = 100000000
-        spendables = [Spendable(COIN_VALUE, standard_tx_out_script(BITCOIN_ADDRESSES[0]), FAKE_HASHES[1], 0)]
+        spendables = [Spendable(COIN_VALUE, script_for_address(BITCOIN_ADDRESSES[0]), FAKE_HASH, 0)]
 
         EXPECTED_IDS = [
             "d28bff6c4a8a0f9e7d5b7df0670d07b43c5613d8c9b14e84707b1e2c0154a978",
@@ -47,16 +51,18 @@ class SpendTest(unittest.TestCase):
             self.assertEqual(tx.fee(), FEE)
             self.assertEqual(tx.id(), EXPECTED_IDS[count-1])
             for idx in range(1, count+1):
-                self.assertEqual(tx.txs_out[idx-1].bitcoin_address(), BITCOIN_ADDRESSES[idx])
+                script = tx.txs_out[idx-1].puzzle_script()
+                address = BitcoinMainnet.ui.address_for_script(script)
+                self.assertEqual(address, BITCOIN_ADDRESSES[idx])
             # TODO: add check that s + s < generator for each signature
             for i in range(count):
                 extra = (1 if i < ((COIN_VALUE - FEE) % count) else 0)
-                self.assertEqual(tx.txs_out[i].coin_value, (COIN_VALUE - FEE)//count + extra)
+                self.assertEqual(tx.txs_out[i].coin_value, (COIN_VALUE - FEE) // count + extra)
 
     def test_confirm_input(self):
         # create a fake Spendable
         COIN_VALUE = 100000000
-        spendables = [Spendable(COIN_VALUE, standard_tx_out_script(BITCOIN_ADDRESSES[0]), FAKE_HASHES[1], 0)]
+        spendables = [Spendable(COIN_VALUE, script_for_address(BITCOIN_ADDRESSES[0]), FAKE_HASH, 0)]
 
         tx_1 = create_signed_tx(spendables, BITCOIN_ADDRESSES[1:2], wifs=WIFS[:1])
 
@@ -76,7 +82,7 @@ class SpendTest(unittest.TestCase):
     def test_confirm_input_raises(self):
         # create a fake Spendable
         COIN_VALUE = 100000000
-        spendables = [Spendable(COIN_VALUE, standard_tx_out_script(BITCOIN_ADDRESSES[0]), FAKE_HASHES[1], 0)]
+        spendables = [Spendable(COIN_VALUE, script_for_address(BITCOIN_ADDRESSES[0]), FAKE_HASH, 0)]
 
         tx_1 = create_signed_tx(spendables, BITCOIN_ADDRESSES[1:2], wifs=WIFS[:1])
         spendables = tx_1.tx_outs_as_spendable()

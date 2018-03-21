@@ -1,25 +1,38 @@
 import unittest
 
+from pycoin.coins.bitcoin.networks import BitcoinMainnet
+from pycoin.coins.bitcoin.SolutionChecker import TxContext
+from pycoin.coins.bitcoin.VM import BitcoinVM
+
+from pycoin.satoshi.opcodes import OPCODE_LIST
+from pycoin.satoshi.IntStreamer import IntStreamer
 from pycoin.serialize import h2b
 from pycoin.intbytes import int2byte
-from pycoin.tx.script.tools import bin_script, compile, disassemble, int_to_script_bytes, int_from_script_bytes
-from pycoin.tx.script.opcodes import INT_TO_OPCODE, OPCODE_LIST
-from pycoin.tx.script.vm import eval_script
+
+# BRAIN DAMAGE
+ScriptTools = BitcoinMainnet.extras.ScriptTools
 
 
 class ToolsTest(unittest.TestCase):
 
-    def test_bin_script(self):
+    def test_compile_push_data_list(self):
 
         def test_bytes(as_bytes):
-            script = bin_script([as_bytes])
-            stack = []
-            eval_script(script, None, lock_time=0, stack=stack, disallow_long_scripts=False)
+            script = ScriptTools.compile_push_data_list([as_bytes])
+            # this is a pretty horrible hack to test the vm with long scripts. But it works
+            tx_context = TxContext()
+            tx_context.signature_for_hash_type_f = None
+            tx_context.flags = 0
+            tx_context.traceback_f = None
+            vm = BitcoinVM(script, tx_context, tx_context.signature_for_hash_type_f, flags=0)
+            vm.MAX_SCRIPT_LENGTH = int(1e9)
+            vm.MAX_BLOB_LENGTH = int(1e9)
+            stack = vm.eval_script()
             assert len(stack) == 1
             assert stack[0] == as_bytes
 
         def test_val(n):
-            as_bytes = int_to_script_bytes(n)
+            as_bytes = IntStreamer.int_to_script_bytes(n)
             test_bytes(as_bytes)
 
         for i in range(100):
@@ -40,9 +53,9 @@ class ToolsTest(unittest.TestCase):
 
     def test_compile_decompile(self):
         def check(s):
-            b1 = compile(s)
-            s1 = disassemble(b1)
-            b2 = compile(s1)
+            b1 = ScriptTools.compile(s)
+            s1 = ScriptTools.disassemble(b1)
+            b2 = ScriptTools.compile(s1)
             self.assertEqual(s, s1)
             self.assertEqual(b1, b2)
 
@@ -57,7 +70,7 @@ class ToolsTest(unittest.TestCase):
         long_hex_260 = build_hex(260, 13, 93)
         long_hex_270 = build_hex(270, 11, 47)
         check("%s %s" % (long_hex_260, long_hex_270))
-        s = set(INT_TO_OPCODE.values())
+        s = set(x[-1] for x in OPCODE_LIST)
         for opcode, code in OPCODE_LIST:
             # skip reassigned NOPs
             if opcode not in s:
@@ -84,20 +97,20 @@ class ToolsTest(unittest.TestCase):
             "93dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1351ed993e"
             "a0d455b75642e2098ea51448d967ae33bfbdfe40cfe97bdc4773992254ae00")
 
-        d1 = disassemble(script).split()
+        d1 = ScriptTools.disassemble(script).split()
         self.assertEqual(len(d1), 5)
         self.assertEqual(d1[-1], "OP_0")
 
     def test_int_to_from_script_bytes(self):
         for i in range(-127, 127):
-            self.assertEqual(int_from_script_bytes(int_to_script_bytes(i)), i)
+            self.assertEqual(IntStreamer.int_from_script_bytes(IntStreamer.int_to_script_bytes(i)), i)
         for i in range(-1024, 1024, 16):
-            self.assertEqual(int_from_script_bytes(int_to_script_bytes(i)), i)
+            self.assertEqual(IntStreamer.int_from_script_bytes(IntStreamer.int_to_script_bytes(i)), i)
         for i in range(-1024*1024, 1024*1024, 10000):
-            self.assertEqual(int_from_script_bytes(int_to_script_bytes(i)), i)
-        self.assertEqual(int_to_script_bytes(1), b"\1")
-        self.assertEqual(int_to_script_bytes(127), b"\x7f")
-        self.assertEqual(int_to_script_bytes(128), b"\x80\x00")
+            self.assertEqual(IntStreamer.int_from_script_bytes(IntStreamer.int_to_script_bytes(i)), i)
+        self.assertEqual(IntStreamer.int_to_script_bytes(1), b"\1")
+        self.assertEqual(IntStreamer.int_to_script_bytes(127), b"\x7f")
+        self.assertEqual(IntStreamer.int_to_script_bytes(128), b"\x80\x00")
 
 
 if __name__ == "__main__":
