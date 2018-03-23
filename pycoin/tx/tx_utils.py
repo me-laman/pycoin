@@ -196,7 +196,7 @@ def create_signed_tx(spendables, payables, wifs=[], fee="standard",
 
     tx = create_tx(spendables, payables, fee=fee, lock_time=lock_time, version=version, network=network)
     sign_tx(tx, wifs=wifs, secret_exponent_db=secret_exponent_db,
-            netcode=netcode, **kwargs)
+            netcode=netcode, network=network, **kwargs)
     for idx, tx_out in enumerate(tx.txs_in):
         if not tx.is_signature_ok(idx):
             raise SecretExponentMissing("failed to sign spendable for %s" %
